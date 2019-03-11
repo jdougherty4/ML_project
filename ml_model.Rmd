@@ -1,0 +1,132 @@
+---
+title: "ML_model"
+author: "Jake Dougherty"
+date: "March 10, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(corrplot)
+source("corrFuns.R")
+
+```
+
+#Reading and splitting the data
+
+- Removing non numberic columns for simplicity.
+- Splitting the data in a train and test set.
+  - Since the given test set only contains 20 values and no responces, we have to split from the training set.
+
+```{r}
+data <- read.csv("pml-training.csv")
+
+data <- data %>% dplyr::select(-cvtd_timestamp, -new_window)
+
+testing_final <- read.csv("pml-testing.csv")
+
+
+inTrain <- createDataPartition(data$classe, p = .7, list = F)
+
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+
+```
+
+#Data Preprocessing
+
+Many columns have mostly missing values. We want to measure which columns have many NAs, Some aren't counted in NAs. The function below replaces the blanks with NAs
+```{r}
+#Replace blanks with NAs
+training <- data.frame(sapply(training, function(f){is.na(f)<-which(f == "");f}) )
+
+#Find the columns with high %ge of NAs
+na_percents <- sapply(training, function(x) sum(is.na(x))/length(x) )
+
+ind <- which(na_percents > 0)
+
+only_nas <- training[,ind]
+```
+
+It turns out some columns are almost only NAs, while the others have no NAs. The problematic columns are removed.
+```{r}
+training_cleaned <- training[,-ind]
+
+summary(training_cleaned)
+
+sum(is.na(training_cleaned))
+```
+
+#Examining correlated predictors. 
+
+Removing unessisary columns, we use a correlation matrix and plot it using the corrplot function from the corrplot package. The function top_cor is user defined and can be found in the corrFuns.R file, it uses a rule of thumb for removing corrilated predictors given in the textbook Applied Predictive modeling. The first correlation matrix shows lots of heavy shaded areas, where the second one with the removed columns are a lot less correlated.
+
+```{r}
+cor_mat <- cor(dplyr::select(training_cleaned,c(-1, -2,-classe)))
+
+corrplot::corrplot(cor_mat, method = "square", type = "full", tl.cex = .8, order = "hclust")
+
+colnms <- top_cor(cor.mat = cor_mat, drop = T, thresh = .85)
+
+training_cleaned <- training_cleaned[,c("X", "user_name", colnms, "classe")]
+
+cor_mat <- cor(training_cleaned[,c(-1, -2,-ncol(training_cleaned))])
+
+corrplot::corrplot(cor_mat, method = "square", type = "full", tl.cex = .8, order = "hclust")
+```
+
+
+#Training and tuning
+
+Unessisary columns are removed. A trainControl object is created specifying to use 10 fold cross validation. This breaks the data up into 10 smaller dataset using the training data with resampling. This ensures that the model is tested on additional test sets
+
+```{r}
+colnms2 <- paste(colnms, collapse = "+")
+
+training_cleaned$classe <- factor(training_cleaned$classe)
+
+training_final <- training_cleaned[,c(-1,-2)]
+
+str(training_final)
+
+train_control <- trainControl(method="cv", number=10, savePredictions = TRUE)
+
+```
+
+
+A gradient boosted machine and random forrest models are considered. Since we removed the highest pairwise correlations, PCA is not used. After the models are trained, we use the predict function to predict the test result.
+
+```{r}
+gbm <- train(classe ~. , data = training_final, 
+             method = "gbm", verbose = F,
+              preProcess = c("scale", "center"), trControl = train_control)
+
+rf <- train(classe ~. , data = training_final, 
+             method = "gbm", verbose = F,
+             preProcess = c("scale", "center"), trControl = train_control)
+
+testing$gbm_pred <- predict(gbm,testing)
+testing$rf_pred <- predict(rf,testing)
+
+caret::plot.train(gbm)
+caret::plot.train(rf)
+```
+
+#Model evaluation and selection
+
+Using the confusionMatrix function, we can observe the models performace on the testing set.
+They both perform very well, however the random forest model is slightly more accurate so this will be used to predict the 20 test set datapoints. 
+
+```{r}
+levels(testing$gbm_pred) <- c("A", "B", "C", "D", "E")
+levels(testing$rf_pred) <- c("A", "B", "C", "D", "E")
+
+confusionMatrix(testing$gbm_pred, testing$classe)
+
+confusionMatrix(testing$rf_pred, testing$classe)
+
+predict(rf, testing_final)
+
+```
